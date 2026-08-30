@@ -6,7 +6,7 @@ import warnings
 from abc import ABC, abstractmethod
 from functools import partial
 from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar, Union
-
+import torch.nn.functional as F
 import numpy as np
 import torch as th
 from gymnasium import spaces
@@ -737,6 +737,51 @@ class ActorCriticPolicy(BasePolicy):
         values = self.value_net(latent_vf)
         entropy = distribution.entropy()
         return values, log_prob, entropy
+    def obtain_logits_from_observation (self, obs:np.ndarray):
+        if isinstance(obs, tuple) and len(obs) == 2 and isinstance(obs[1], dict):
+            raise ValueError(
+                "You have passed a tuple to the predict() function instead of a Numpy array or a Dict. "
+                "You are probably mixing Gym API with SB3 VecEnv API: `obs, info = env.reset()` (Gym) "
+                "vs `obs = vec_env.reset()` (SB3 VecEnv). "
+                "See related issue https://github.com/DLR-RM/stable-baselines3/issues/1694 "
+                "and documentation for more information: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html#vecenv-api-vs-gym-api"
+                )
+        with th.no_grad():
+            obs_tensor, vectorized_env = self.obs_to_tensor(obs)
+            return self.obtain_logits(obs_tensor),vectorized_env
+    def obtain_logits(self, obs: PyTorchObs):
+        # Preprocess the observation if needed
+        features = self.extract_features(obs)
+        if self.share_features_extractor:
+            latent_pi, latent_vf = self.mlp_extractor(features)
+        else:
+            pi_features, vf_features = features
+            latent_pi = self.mlp_extractor.forward_actor(pi_features)
+        return self.action_net(latent_pi)
+    def loss_uniform(self,logits):
+        if isinstance(self.action_dist, DiagGaussianDistribution):
+            raise NotImplemented("No need for now")
+        elif isinstance(self.action_dist, CategoricalDistribution):
+            # Here mean_actions are the logits before the softmax
+            log_probs = F.log_softmax(logits,dim= 1)
+            n_action = logits.size(-1)
+            uniform = th.full_like(logits, 1.0 / n_action)
+            return F.kl_div(log_probs, uniform, reduction = 'batchmean')
+        elif isinstance(self.action_dist, MultiCategoricalDistribution):
+            # Here mean_actions are the flattened logits
+            raise NotImplemented("No need for now")
+        elif isinstance(self.action_dist, BernoulliDistribution):
+            # Here mean_actions are the logits (before rounding to get the binary actions)
+            print("Never tested this action space")
+            prob = th.sigmoid(logits)
+            uniform = th.full_like(prob, 0.5)
+            log_probs = th.log (prob)
+            return F.kl_div(log_probs, uniform, reduction = 'batchmean')
+        elif isinstance(self.action_dist, StateDependentNoiseDistribution):
+            raise NotImplemented("No need for now")
+        else:
+            raise ValueError("Invalid action distribution")
+
 
     def get_distribution(self, obs: PyTorchObs) -> Distribution:
         """
