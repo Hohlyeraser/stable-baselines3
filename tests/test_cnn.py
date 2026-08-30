@@ -9,7 +9,6 @@ from gymnasium import spaces
 from stable_baselines3 import A2C, DQN, PPO, SAC, TD3
 from stable_baselines3.common.envs import FakeImageEnv
 from stable_baselines3.common.preprocessing import is_image_space, is_image_space_channels_first
-from stable_baselines3.common.utils import zip_strict
 from stable_baselines3.common.vec_env import DummyVecEnv, VecFrameStack, VecNormalize, VecTransposeImage, is_vecenv_wrapped
 
 
@@ -39,6 +38,7 @@ def test_cnn(tmp_path, model_class, share_features_extractor):
             buffer_size=250,
             policy_kwargs=dict(features_extractor_kwargs=dict(features_dim=32)),
             seed=1,
+            train_freq=8,
         )
     model = model_class("CnnPolicy", env, **kwargs).learn(250)
 
@@ -91,7 +91,7 @@ def test_vec_transpose_skip(tmp_path, model_class):
     model = model_class("CnnPolicy", env, **kwargs).learn(250)
 
     obs = env.reset()
-    action, _ = model.predict(obs, deterministic=True)
+    model.predict(obs, deterministic=True)
 
 
 def patch_dqn_names_(model):
@@ -102,23 +102,27 @@ def patch_dqn_names_(model):
 
 
 def params_should_match(params, other_params):
-    for param, other_param in zip_strict(params, other_params):
+    for param, other_param in zip(params, other_params, strict=True):
         assert th.allclose(param, other_param)
 
 
 def params_should_differ(params, other_params):
-    for param, other_param in zip_strict(params, other_params):
+    for param, other_param in zip(params, other_params, strict=True):
         assert not th.allclose(param, other_param)
 
 
 def check_td3_feature_extractor_match(model):
-    for (key, actor_param), critic_param in zip(model.actor_target.named_parameters(), model.critic_target.parameters()):
+    for (key, actor_param), critic_param in zip(
+        model.actor_target.named_parameters(), model.critic_target.parameters(), strict=False
+    ):
         if "features_extractor" in key:
             assert th.allclose(actor_param, critic_param), key
 
 
 def check_td3_feature_extractor_differ(model):
-    for (key, actor_param), critic_param in zip(model.actor_target.named_parameters(), model.critic_target.parameters()):
+    for (key, actor_param), critic_param in zip(
+        model.actor_target.named_parameters(), model.critic_target.parameters(), strict=False
+    ):
         if "features_extractor" in key:
             assert not th.allclose(actor_param, critic_param), key
 
@@ -129,12 +133,19 @@ def test_features_extractor_target_net(model_class, share_features_extractor):
     if model_class == DQN and share_features_extractor:
         pytest.skip()
 
-    env = FakeImageEnv(screen_height=40, screen_width=40, n_channels=1, discrete=model_class not in {SAC, TD3})
+    env = FakeImageEnv(screen_height=36, screen_width=36, n_channels=1, discrete=model_class not in {SAC, TD3})
     # Avoid memory error when using replay buffer
     # Reduce the size of the features
-    kwargs = dict(buffer_size=250, learning_starts=100, policy_kwargs=dict(features_extractor_kwargs=dict(features_dim=32)))
+    kwargs = dict(
+        buffer_size=100,
+        learning_starts=50,
+        policy_kwargs=dict(features_extractor_kwargs=dict(features_dim=8)),
+        learning_rate=1e-3,
+    )
     if model_class != DQN:
         kwargs["policy_kwargs"]["share_features_extractor"] = share_features_extractor
+    else:
+        kwargs["target_update_interval"] = 10
 
     # No delay for TD3 (changes when the actor and polyak update take place)
     if model_class == TD3:
@@ -161,14 +172,14 @@ def test_features_extractor_target_net(model_class, share_features_extractor):
         if model_class == TD3:
             assert id(model.policy.actor_target.features_extractor) != id(model.policy.critic_target.features_extractor)
 
-    # Critic and target should be equal at the begginning of training
+    # Critic and target should be equal at the beginning of training
     params_should_match(model.critic.parameters(), model.critic_target.parameters())
 
     # TD3 has also a target actor net
     if model_class == TD3:
         params_should_match(model.actor.parameters(), model.actor_target.parameters())
 
-    model.learn(200)
+    model.learn(100)
 
     # Critic and target should differ
     params_should_differ(model.critic.parameters(), model.critic_target.parameters())

@@ -74,7 +74,7 @@ class DummyDictEnv(gym.Env):
 @pytest.mark.parametrize("env_cls", [DummyEnv, DummyDictEnv])
 def test_env(env_cls):
     # Check the env used for testing
-    # Do not warn for assymetric space
+    # Do not warn for asymmetric space
     check_env(env_cls(), warn=False, skip_render_check=True)
 
 
@@ -86,7 +86,7 @@ def test_replay_buffer_normalization(replay_buffer_cls):
 
     buffer = replay_buffer_cls(100, env.observation_space, env.action_space, device="cpu")
 
-    # Interract and store transitions
+    # Interact and store transitions
     env.reset()
     obs = env.get_original_obs()
     for _ in range(100):
@@ -125,7 +125,7 @@ def test_device_buffer(replay_buffer_cls, device):
 
     buffer = replay_buffer_cls(100, env.observation_space, env.action_space, device=device)
 
-    # Interract and store transitions
+    # Interact and store transitions
     obs = env.reset()
     for _ in range(100):
         action = env.action_space.sample()
@@ -139,28 +139,107 @@ def test_device_buffer(replay_buffer_cls, device):
 
     # Get data from the buffer
     if replay_buffer_cls in [RolloutBuffer, DictRolloutBuffer]:
+        # get returns an iterator over minibatches
         data = buffer.get(50)
     elif replay_buffer_cls in [ReplayBuffer, DictReplayBuffer]:
-        data = buffer.sample(50)
+        data = [buffer.sample(50)]
 
     # Check that all data are on the desired device
     desired_device = get_device(device).type
-    for value in list(data):
-        if isinstance(value, dict):
-            for key in value.keys():
-                assert value[key].device.type == desired_device
-        elif isinstance(value, th.Tensor):
-            assert value.device.type == desired_device
+    for minibatch in list(data):
+        for value in minibatch:
+            if isinstance(value, dict):
+                for key in value.keys():
+                    assert value[key].device.type == desired_device
+            elif isinstance(value, th.Tensor):
+                assert value.device.type == desired_device
+            elif isinstance(value, np.ndarray):
+                # For prioritized replay weights/indices
+                pass
+            elif value is None:
+                # discounts factors are only set for n-step replay buffer
+                pass
+            else:
+                raise TypeError(f"Unknown value type: {type(value)}")
+
+
+@pytest.mark.parametrize(
+    "obs_dtype",
+    [
+        np.dtype(np.uint8),
+        np.dtype(np.int8),
+        np.dtype(np.uint16),
+        np.dtype(np.int16),
+        np.dtype(np.uint32),
+        np.dtype(np.int32),
+        np.dtype(np.uint64),
+        np.dtype(np.int64),
+        np.dtype(np.float16),
+        np.dtype(np.float32),
+        np.dtype(np.float64),
+    ],
+)
+@pytest.mark.parametrize("use_dict", [False, True])
+@pytest.mark.parametrize(
+    "action_space",
+    [
+        spaces.Discrete(10),
+        spaces.Box(low=-1.0, high=1.0, dtype=np.float32),
+        spaces.Box(low=-1.0, high=1.0, dtype=np.float64),
+    ],
+)
+def test_buffer_dtypes(obs_dtype, use_dict, action_space):
+    obs_space = spaces.Box(0, 100, dtype=obs_dtype)
+    buffer_params = dict(buffer_size=1, action_space=action_space)
+    # For off-policy algorithms, we cast float64 actions to float32, see GH#1145
+    actual_replay_action_dtype = ReplayBuffer._maybe_cast_dtype(action_space.dtype)
+    # For on-policy, we cast at sample time to float32 for backward compat
+    # and to avoid issue computing log prob with multibinary
+    actual_rollout_action_dtype = np.float32
+
+    if use_dict:
+        dict_obs_space = spaces.Dict({"obs": obs_space, "obs_2": spaces.Box(0, 100, dtype=np.uint8)})
+        buffer_params["observation_space"] = dict_obs_space
+        rollout_buffer = DictRolloutBuffer(**buffer_params)
+        replay_buffer = DictReplayBuffer(**buffer_params)
+        assert rollout_buffer.observations["obs"].dtype == obs_dtype
+        assert replay_buffer.observations["obs"].dtype == obs_dtype
+        assert rollout_buffer.observations["obs_2"].dtype == np.uint8
+        assert replay_buffer.observations["obs_2"].dtype == np.uint8
+    else:
+        buffer_params["observation_space"] = obs_space
+        rollout_buffer = RolloutBuffer(**buffer_params)
+        replay_buffer = ReplayBuffer(**buffer_params)
+        assert rollout_buffer.observations.dtype == obs_dtype
+        assert replay_buffer.observations.dtype == obs_dtype
+
+    assert rollout_buffer.actions.dtype == action_space.dtype
+    assert replay_buffer.actions.dtype == actual_replay_action_dtype
+    # Check that sampled types are corrects
+    rollout_buffer.full = True
+    replay_buffer.full = True
+    rollout_data = next(rollout_buffer.get(batch_size=64))
+    buffer_data = replay_buffer.sample(batch_size=64)
+    assert rollout_data.actions.numpy().dtype == actual_rollout_action_dtype
+    assert buffer_data.actions.numpy().dtype == actual_replay_action_dtype
+    if use_dict:
+        assert buffer_data.observations["obs"].numpy().dtype == obs_dtype
+        assert buffer_data.observations["obs_2"].numpy().dtype == np.uint8
+        assert rollout_data.observations["obs"].numpy().dtype == obs_dtype
+        assert rollout_data.observations["obs_2"].numpy().dtype == np.uint8
+    else:
+        assert buffer_data.observations.numpy().dtype == obs_dtype
+        assert rollout_data.observations.numpy().dtype == obs_dtype
 
 
 def test_custom_rollout_buffer():
     A2C("MlpPolicy", "Pendulum-v1", rollout_buffer_class=RolloutBuffer, rollout_buffer_kwargs=dict())
 
-    with pytest.raises(TypeError, match="unexpected keyword argument 'wrong_keyword'"):
+    with pytest.raises(TypeError, match=r"unexpected keyword argument 'wrong_keyword'"):
         A2C("MlpPolicy", "Pendulum-v1", rollout_buffer_class=RolloutBuffer, rollout_buffer_kwargs=dict(wrong_keyword=1))
 
-    with pytest.raises(TypeError, match="got multiple values for keyword argument 'gamma'"):
+    with pytest.raises(TypeError, match=r"got multiple values for keyword argument 'gamma'"):
         A2C("MlpPolicy", "Pendulum-v1", rollout_buffer_class=RolloutBuffer, rollout_buffer_kwargs=dict(gamma=1))
 
-    with pytest.raises(AssertionError, match="DictRolloutBuffer must be used with Dict obs space only"):
+    with pytest.raises(AssertionError, match=r"DictRolloutBuffer must be used with Dict obs space only"):
         A2C("MlpPolicy", "Pendulum-v1", rollout_buffer_class=DictRolloutBuffer)

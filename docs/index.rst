@@ -10,26 +10,28 @@ Stable-Baselines3 Docs - Reliable Reinforcement Learning Implementations
 It is the next major version of `Stable Baselines <https://github.com/hill-a/stable-baselines>`_.
 
 
-Github repository: https://github.com/DLR-RM/stable-baselines3
+GitHub repository: https://github.com/DLR-RM/stable-baselines3
 
 Paper: https://jmlr.org/papers/volume22/20-1364/20-1364.pdf
 
 RL Baselines3 Zoo (training framework for SB3): https://github.com/DLR-RM/rl-baselines3-zoo
 
-RL Baselines3 Zoo provides a collection of pre-trained agents, scripts for training, evaluating agents, tuning hyperparameters, plotting results and recording videos.
+RL Baselines3 Zoo provides a collection of pre-trained agents, scripts for training, evaluating agents, tuning hyperparameters, plotting results, and recording videos.
 
 SB3 Contrib (experimental RL code, latest algorithms): https://github.com/Stable-Baselines-Team/stable-baselines3-contrib
+
+SBX (SB3 + Jax): https://github.com/araffin/sbx
 
 
 Main Features
 --------------
 
 - Unified structure for all algorithms
-- PEP8 compliant (unified code style)
+- PEP 8 compliant (unified code style)
 - Documented functions and classes
-- Tests, high code coverage and type hints
+- Tests, high code coverage, and type hints
 - Clean code
-- Tensorboard support
+- TensorBoard support
 - **The performance of each algorithm was tested** (see *Results* section in their respective page)
 
 
@@ -52,6 +54,7 @@ Main Features
    guide/rl_zoo
    guide/sb3_contrib
    guide/sbx
+   guide/plotting
    guide/imitation
    guide/migration
    guide/checking_nan
@@ -110,15 +113,17 @@ To cite this project in publications:
     volume  = {22},
     number  = {268},
     pages   = {1-8},
-    url     = {http://jmlr.org/papers/v22/20-1364.html}
+    url     = {https://jmlr.org/papers/v22/20-1364.html}
   }
+
+Note: If you need to refer to a specific version of SB3, you can also use the `Zenodo DOI <https://doi.org/10.5281/zenodo.8123988>`_.
 
 Contributing
 ------------
 
-To any interested in making the rl baselines better, there are still some improvements
+For anyone interested in making the RL baselines better, there are still some improvements
 that need to be done.
-You can check issues in the `repo <https://github.com/DLR-RM/stable-baselines3/issues>`_.
+You can check issues in the `repository <https://github.com/DLR-RM/stable-baselines3/labels/help%20wanted>`_.
 
 If you want to contribute, please read `CONTRIBUTING.md <https://github.com/DLR-RM/stable-baselines3/blob/master/CONTRIBUTING.md>`_ first.
 

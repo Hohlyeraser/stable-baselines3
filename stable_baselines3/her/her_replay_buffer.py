@@ -1,6 +1,6 @@
 import copy
 import warnings
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import numpy as np
 import torch as th
@@ -45,7 +45,7 @@ class HerReplayBuffer(DictReplayBuffer):
         False by default.
     """
 
-    env: Optional[VecEnv]
+    env: VecEnv | None
 
     def __init__(
         self,
@@ -53,12 +53,12 @@ class HerReplayBuffer(DictReplayBuffer):
         observation_space: spaces.Dict,
         action_space: spaces.Space,
         env: VecEnv,
-        device: Union[th.device, str] = "auto",
+        device: th.device | str = "auto",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
         n_sampled_goal: int = 4,
-        goal_selection_strategy: Union[GoalSelectionStrategy, str] = "future",
+        goal_selection_strategy: GoalSelectionStrategy | str = "future",
         copy_info_dict: bool = False,
     ):
         super().__init__(
@@ -98,7 +98,7 @@ class HerReplayBuffer(DictReplayBuffer):
         self.ep_length = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
         self._current_ep_start = np.zeros(self.n_envs, dtype=np.int64)
 
-    def __getstate__(self) -> Dict[str, Any]:
+    def __getstate__(self) -> dict[str, Any]:
         """
         Gets state for pickling.
 
@@ -109,7 +109,7 @@ class HerReplayBuffer(DictReplayBuffer):
         del state["env"]
         return state
 
-    def __setstate__(self, state: Dict[str, Any]) -> None:
+    def __setstate__(self, state: dict[str, Any]) -> None:
         """
         Restores pickled state.
 
@@ -134,12 +134,12 @@ class HerReplayBuffer(DictReplayBuffer):
 
     def add(  # type: ignore[override]
         self,
-        obs: Dict[str, np.ndarray],
-        next_obs: Dict[str, np.ndarray],
+        obs: dict[str, np.ndarray],
+        next_obs: dict[str, np.ndarray],
         action: np.ndarray,
         reward: np.ndarray,
         done: np.ndarray,
-        infos: List[Dict[str, Any]],
+        infos: list[dict[str, Any]],
     ) -> None:
         # When the buffer is full, we rewrite on old episodes. When we start to
         # rewrite on an old episodes, we want the whole old episode to be deleted
@@ -157,7 +157,7 @@ class HerReplayBuffer(DictReplayBuffer):
         self.ep_start[self.pos] = self._current_ep_start.copy()
 
         if self.copy_info_dict:
-            self.infos[self.pos] = infos
+            self.infos[self.pos] = infos  # type: ignore[assignment]
         # Store the transition
         super().add(obs, next_obs, action, reward, done, infos)
 
@@ -183,7 +183,7 @@ class HerReplayBuffer(DictReplayBuffer):
         # Update the current episode start
         self._current_ep_start[env_idx] = self.pos
 
-    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> DictReplayBufferSamples:  # type: ignore[override]
+    def sample(self, batch_size: int, env: VecNormalize | None = None) -> DictReplayBufferSamples:  # type: ignore[override]
         """
         Sample elements from the replay buffer.
 
@@ -249,13 +249,13 @@ class HerReplayBuffer(DictReplayBuffer):
         self,
         batch_indices: np.ndarray,
         env_indices: np.ndarray,
-        env: Optional[VecNormalize] = None,
+        env: VecNormalize | None = None,
     ) -> DictReplayBufferSamples:
         """
         Get the samples corresponding to the batch and environment indices.
 
         :param batch_indices: Indices of the transitions
-        :param env_indices: Indices of the envrionments
+        :param env_indices: Indices of the environments
         :param env: associated gym VecEnv to normalize the
             observations/rewards when sampling, defaults to None
         :return: Samples
@@ -288,13 +288,13 @@ class HerReplayBuffer(DictReplayBuffer):
         self,
         batch_indices: np.ndarray,
         env_indices: np.ndarray,
-        env: Optional[VecNormalize] = None,
+        env: VecNormalize | None = None,
     ) -> DictReplayBufferSamples:
         """
         Get the samples, sample new desired goals and compute new rewards.
 
         :param batch_indices: Indices of the transitions
-        :param env_indices: Indices of the envrionments
+        :param env_indices: Indices of the environments
         :param env: associated gym VecEnv to normalize the
             observations/rewards when sampling, defaults to None
         :return: Samples, with new desired goals and new rewards
@@ -357,7 +357,7 @@ class HerReplayBuffer(DictReplayBuffer):
         Sample goals based on goal_selection_strategy.
 
         :param batch_indices: Indices of the transitions
-        :param env_indices: Indices of the envrionments
+        :param env_indices: Indices of the environments
         :return: Sampled goals
         """
         batch_ep_start = self.ep_start[batch_indices, env_indices]
@@ -396,13 +396,13 @@ class HerReplayBuffer(DictReplayBuffer):
                 "If you are in the same episode as when the replay buffer was saved,\n"
                 "you should use `truncate_last_trajectory=False` to avoid that issue."
             )
-            # only consider epsiodes that are not finished
+            # only consider episodes that are not finished
             for env_idx in np.where(self._current_ep_start != self.pos)[0]:
                 # set done = True for last episodes
                 self.dones[self.pos - 1, env_idx] = True
                 # make sure that last episodes can be sampled and
                 # update next episode start (self._current_ep_start)
-                self._compute_episode_length(env_idx)
+                self._compute_episode_length(int(env_idx))
                 # handle infinite horizon tasks
                 if self.handle_timeout_termination:
                     self.timeouts[self.pos - 1, env_idx] = True  # not an actual timeout, but it allows bootstrapping

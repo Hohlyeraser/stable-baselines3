@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
 
 import gymnasium as gym
 import numpy as np
@@ -24,7 +23,7 @@ class DummyEnv(gym.Env):
     def step(self, action):
         return self.observation_space.sample(), 0.0, False, False, {}
 
-    def reset(self, *, seed: Optional[int] = None, options: Optional[Dict] = None):
+    def reset(self, *, seed: int | None = None, options: dict | None = None):
         if seed is not None:
             super().reset(seed=seed)
         return self.observation_space.sample(), {}
@@ -124,7 +123,8 @@ def test_sde_multi_dim():
 @pytest.mark.parametrize("model_class", [A2C, PPO, DQN])
 @pytest.mark.parametrize("env", ["Taxi-v3"])
 def test_discrete_obs_space(model_class, env):
-    env = make_vec_env(env, n_envs=2, seed=0)
+
+    env = _make_env_safe(env, n_envs=2, seed=0)
     kwargs = {}
     if model_class == DQN:
         kwargs = dict(buffer_size=1000, learning_starts=100)
@@ -174,3 +174,17 @@ def test_multidim_binary_not_supported():
     env = DummyEnv(BOX_SPACE_FLOAT32, spaces.MultiBinary([2, 3]))
     with pytest.raises(AssertionError, match=r"Multi-dimensional MultiBinary\(.*\) action space is not supported"):
         A2C("MlpPolicy", env)
+
+
+def _make_env_safe(env_id, **kwargs):
+    try:
+        return make_vec_env(env_id, **kwargs)
+    except gym.error.DeprecatedEnv:
+        # map deprecated to new (better extendability for this)
+        fallback_map = {
+            # as of gymnasium 1.3.0 Taxi-v3 is deprecated
+            "Taxi-v3": "Taxi-v4",
+        }
+        if env_id in fallback_map:
+            return make_vec_env(fallback_map[env_id], **kwargs)
+        raise

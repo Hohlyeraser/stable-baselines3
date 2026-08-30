@@ -19,7 +19,7 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.envs import FakeImageEnv, IdentityEnv, IdentityEnvBox
 from stable_baselines3.common.save_util import load_from_pkl, open_path, save_to_pkl
-from stable_baselines3.common.utils import get_device
+from stable_baselines3.common.utils import ConstantSchedule, FloatSchedule, get_device
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 MODEL_LIST = [PPO, A2C, TD3, SAC, DQN, DDPG]
@@ -48,9 +48,13 @@ def test_save_load(tmp_path, model_class):
 
     env = DummyVecEnv([lambda: select_env(model_class)])
 
+    kwargs = {"learning_rate": 1e-3}
+    if model_class == PPO:
+        kwargs.update({"n_steps": 64, "n_epochs": 1})
+
     # create model
-    model = model_class("MlpPolicy", env, policy_kwargs=dict(net_arch=[16]), verbose=1)
-    model.learn(total_timesteps=500)
+    model = model_class("MlpPolicy", env, policy_kwargs=dict(net_arch=[16]), verbose=1, **kwargs)
+    model.learn(total_timesteps=128)
 
     env.reset()
     observations = np.concatenate([env.step([env.action_space.sample()])[0] for _ in range(10)], axis=0)
@@ -159,9 +163,15 @@ def test_save_load(tmp_path, model_class):
         assert np.allclose(selected_actions, new_selected_actions, 1e-4)
 
         # check if learn still works
-        model.learn(total_timesteps=500)
+        model.learn(total_timesteps=128)
 
         del model
+
+    # Check that loading after compiling works, see GH#2137
+    model = model_class.load(tmp_path / "test_save.zip")
+    model.policy = th.compile(model.policy)
+    model.save(tmp_path / "test_save.zip")
+    model_class.load(tmp_path / "test_save.zip")
 
     # clear file from os
     os.remove(tmp_path / "test_save.zip")
@@ -284,8 +294,8 @@ def test_exclude_include_saved_params(tmp_path, model_class):
 
 
 def test_save_load_pytorch_var(tmp_path):
-    model = SAC("MlpPolicy", "Pendulum-v1", seed=3, policy_kwargs=dict(net_arch=[64], n_critics=1))
-    model.learn(200)
+    model = SAC("MlpPolicy", "Pendulum-v1", learning_starts=10, seed=3, policy_kwargs=dict(net_arch=[64], n_critics=1))
+    model.learn(110)
     save_path = str(tmp_path / "sac_pendulum")
     model.save(save_path)
     env = model.get_env()
@@ -295,14 +305,14 @@ def test_save_load_pytorch_var(tmp_path):
 
     model = SAC.load(save_path, env=env)
     assert th.allclose(log_ent_coef_before, model.log_ent_coef)
-    model.learn(200)
+    model.learn(50)
     log_ent_coef_after = model.log_ent_coef
     # Check that the entropy coefficient is still optimized
     assert not th.allclose(log_ent_coef_before, log_ent_coef_after)
 
     # With a fixed entropy coef
     model = SAC("MlpPolicy", "Pendulum-v1", seed=3, ent_coef=0.01, policy_kwargs=dict(net_arch=[64], n_critics=1))
-    model.learn(200)
+    model.learn(110)
     save_path = str(tmp_path / "sac_pendulum")
     model.save(save_path)
     env = model.get_env()
@@ -313,7 +323,7 @@ def test_save_load_pytorch_var(tmp_path):
 
     model = SAC.load(save_path, env=env)
     assert th.allclose(ent_coef_before, model.ent_coef_tensor)
-    model.learn(200)
+    model.learn(50)
     ent_coef_after = model.ent_coef_tensor
     assert model.log_ent_coef is None
     # Check that the entropy coefficient is still the same
@@ -340,7 +350,7 @@ def test_save_load_env_cnn(tmp_path, model_class):
     # clear file from os
     os.remove(tmp_path / "test_save.zip")
 
-    # Check we can load models saved with SB3 < 1.7.0
+    # Check we can load A2C/PPO models saved with SB3 < 1.7.0
     if model_class == A2C:
         del model.policy.pi_features_extractor
         model.save(tmp_path / "test_save")
@@ -354,9 +364,9 @@ def test_save_load_replay_buffer(tmp_path, model_class):
     path = pathlib.Path(tmp_path / "logs/replay_buffer.pkl")
     path.parent.mkdir(exist_ok=True, parents=True)  # to not raise a warning
     model = model_class(
-        "MlpPolicy", select_env(model_class), buffer_size=1000, policy_kwargs=dict(net_arch=[64]), learning_starts=200
+        "MlpPolicy", select_env(model_class), buffer_size=1000, policy_kwargs=dict(net_arch=[64]), learning_starts=100
     )
-    model.learn(300)
+    model.learn(150)
     old_replay_buffer = deepcopy(model.replay_buffer)
     model.save_replay_buffer(path)
     model.replay_buffer = None
@@ -410,14 +420,14 @@ def test_warn_buffer(recwarn, model_class, optimize_memory_usage):
         learning_starts=10,
     )
 
-    model.learn(150)
+    model.learn(50)
 
-    model.learn(150, reset_num_timesteps=False)
+    model.learn(50, reset_num_timesteps=False)
 
     # Check that there is no warning
     assert len(recwarn) == 0
 
-    model.learn(150)
+    model.learn(50)
 
     if optimize_memory_usage:
         assert len(recwarn) == 1
@@ -437,7 +447,11 @@ def test_save_load_policy(tmp_path, model_class, policy_str, use_sde):
     :param model_class: (BaseAlgorithm) A RL model
     :param policy_str: (str) Name of the policy.
     """
-    kwargs = dict(policy_kwargs=dict(net_arch=[16]))
+    kwargs = dict(policy_kwargs=dict(net_arch=[16]), learning_rate=1e-3)
+
+    if model_class == PPO:
+        kwargs["n_steps"] = 64
+        kwargs["n_epochs"] = 1
 
     # gSDE is only applicable for A2C, PPO and SAC
     if use_sde and model_class not in [A2C, PPO, SAC]:
@@ -450,7 +464,10 @@ def test_save_load_policy(tmp_path, model_class, policy_str, use_sde):
             # Avoid memory error when using replay buffer
             # Reduce the size of the features
             kwargs = dict(
-                buffer_size=250, learning_starts=100, policy_kwargs=dict(features_extractor_kwargs=dict(features_dim=32))
+                buffer_size=250,
+                learning_starts=100,
+                policy_kwargs=dict(features_extractor_kwargs=dict(features_dim=16)),
+                train_freq=2,
             )
         env = FakeImageEnv(screen_height=40, screen_width=40, n_channels=2, discrete=model_class == DQN)
 
@@ -461,7 +478,7 @@ def test_save_load_policy(tmp_path, model_class, policy_str, use_sde):
 
     # create model
     model = model_class(policy_str, env, verbose=1, **kwargs)
-    model.learn(total_timesteps=300)
+    model.learn(total_timesteps=128)
 
     env.reset()
     observations = np.concatenate([env.step([env.action_space.sample()])[0] for _ in range(10)], axis=0)
@@ -556,7 +573,7 @@ def test_save_load_q_net(tmp_path, model_class, policy_str):
 
     # create model
     model = model_class(policy_str, env, verbose=1, **kwargs)
-    model.learn(total_timesteps=300)
+    model.learn(total_timesteps=150)
 
     env.reset()
     observations = np.concatenate([env.step([env.action_space.sample()])[0] for _ in range(10)], axis=0)
@@ -758,16 +775,16 @@ def test_no_resource_warning(tmp_path):
 
     # check that files are properly closed
     # Create a PPO agent and save it
-    PPO("MlpPolicy", "CartPole-v1").save(tmp_path / "dqn_cartpole")
-    PPO.load(tmp_path / "dqn_cartpole")
+    PPO("MlpPolicy", "CartPole-v1", device="cpu").save(tmp_path / "dqn_cartpole")
+    PPO.load(tmp_path / "dqn_cartpole", device="cpu")
 
-    PPO("MlpPolicy", "CartPole-v1").save(str(tmp_path / "dqn_cartpole"))
-    PPO.load(str(tmp_path / "dqn_cartpole"))
+    PPO("MlpPolicy", "CartPole-v1", device="cpu").save(str(tmp_path / "dqn_cartpole"))
+    PPO.load(str(tmp_path / "dqn_cartpole"), device="cpu")
 
     # Do the same but in memory, should not close the file
     with tempfile.TemporaryFile() as fp:
-        PPO("MlpPolicy", "CartPole-v1").save(fp)
-        PPO.load(fp)
+        PPO("MlpPolicy", "CartPole-v1", device="cpu").save(fp)
+        PPO.load(fp, device="cpu")
         assert not fp.closed
 
     # Same but with replay buffer
@@ -783,3 +800,125 @@ def test_no_resource_warning(tmp_path):
         fp.seek(0)
         model.load_replay_buffer(fp)
         assert not fp.closed
+
+
+def test_cast_lr_schedule(tmp_path):
+    # See GH#1900
+    model = PPO("MlpPolicy", "Pendulum-v1", learning_rate=lambda t: t * np.sin(1.0))
+    # Note: for recent version of numpy, np.float64 is a subclass of float
+    # so we need to use type here
+    # assert isinstance(model.lr_schedule(1.0), float)
+    assert type(model.lr_schedule(1.0)) is float
+    assert np.allclose(model.lr_schedule(0.5), 0.5 * np.sin(1.0))
+    model.save(tmp_path / "ppo.zip")
+    model = PPO.load(tmp_path / "ppo.zip")
+    assert type(model.lr_schedule(1.0)) is float
+    assert np.allclose(model.lr_schedule(0.5), 0.5 * np.sin(1.0))
+
+
+def test_save_load_net_arch_none(tmp_path):
+    """
+    Test that the model is loaded correctly when net_arch is manually set to None.
+    See GH#1928
+    """
+    PPO("MlpPolicy", "CartPole-v1", policy_kwargs=dict(net_arch=None)).save(tmp_path / "ppo.zip")
+    model = PPO.load(tmp_path / "ppo.zip")
+    # None has been replaced by the default net arch
+    assert model.policy.net_arch is not None
+    os.remove(tmp_path / "ppo.zip")
+
+
+def test_save_load_no_target_params(tmp_path):
+    # Check we can load DQN models saved with SB3 < 2.4.0
+    model = DQN("MlpPolicy", "CartPole-v1", buffer_size=10000, learning_starts=4)
+    env = model.get_env()
+    # Include target net params
+    model.policy.optimizer = th.optim.Adam(model.policy.parameters(), lr=0.001)
+    model.save(tmp_path / "test_save")
+    with pytest.warns(UserWarning):
+        DQN.load(str(tmp_path / "test_save.zip"), env=env).learn(20)
+    os.remove(tmp_path / "test_save.zip")
+
+
+@pytest.mark.parametrize("model_class", [PPO])
+def test_save_load_backward_compatible(tmp_path, model_class):
+    """
+    Test that lambdas are working when saving/loading models.
+    See GH#2115
+    """
+
+    env = DummyVecEnv([lambda: IdentityEnvBox(-1, 1)])
+
+    model = model_class("MlpPolicy", env, n_steps=64, learning_rate=lambda _: 0.001, clip_range=lambda _: 0.3)
+    model.learn(total_timesteps=100)
+
+    model.save(tmp_path / "test_schedule_safe.zip")
+
+    model = model_class.load(tmp_path / "test_schedule_safe.zip", env=env)
+
+    assert model.learning_rate(0) == 0.001
+    assert model.learning_rate.__name__ == "<lambda>"
+
+    assert isinstance(model.clip_range, FloatSchedule)
+    assert model.clip_range.value_schedule(0) == 0.3
+
+
+@pytest.mark.parametrize("model_class", [PPO])
+def test_save_load_clip_range_portable(tmp_path, model_class):
+    """
+    Test that models using callable schedule classes (e.g., ConstantSchedule, LinearSchedule)
+    are saved and loaded correctly without segfaults across different machines.
+
+    This ensures that we don't serialize fragile lambda closures.
+    See GH#2115
+    """
+    # Create a simple env
+    env = DummyVecEnv([lambda: IdentityEnvBox(-1, 1)])
+
+    model = model_class("MlpPolicy", env, n_epochs=1, n_steps=64)
+    model.learn(total_timesteps=128)
+
+    # Make sure that classes are used not lambdas by default
+    assert isinstance(model.clip_range, FloatSchedule)
+    assert isinstance(model.clip_range.value_schedule, ConstantSchedule)
+    assert model.clip_range.value_schedule.val == 0.2
+
+    model.save(tmp_path / "test_schedule_safe.zip")
+
+    model = model_class.load(tmp_path / "test_schedule_safe.zip", env=env)
+
+    # Check that the model is loaded correctly
+    assert isinstance(model.clip_range, FloatSchedule)
+    assert isinstance(model.clip_range.value_schedule, ConstantSchedule)
+    assert model.clip_range.value_schedule.val == 0.2
+
+
+def test_load_bad_zip(tmp_path):
+    """Test that loading a non-zip file raises a ValueError."""
+    # Write a plain text file to the path
+    bad_path = tmp_path / "not_a_zip.zip"
+    bad_path.write_text("this is not a zip file")
+
+    with pytest.raises(ValueError, match="wasn't a zip-file"):
+        PPO.load(str(bad_path))
+
+
+@pytest.mark.filterwarnings("error::ResourceWarning")
+def test_open_path_directory_and_missing_parent(tmp_path):
+    """Test IsADirectoryError and FileNotFoundError handling in open_path."""
+    # Test IsADirectoryError: path already has the suffix and is a folder
+    dir_path = tmp_path / "is_a_folder.pkl"
+    dir_path.mkdir()
+    with warnings.catch_warnings(record=True) as record:
+        open_path(dir_path, "w", suffix="pkl").close()
+    assert any("is a folder" in str(warning.message) for warning in record)
+    # Verify the fallback file was created
+    assert (tmp_path / "is_a_folder.pkl_2").exists()
+
+    # Test FileNotFoundError: parent folder doesn't exist
+    missing_parent_path = tmp_path / "nonexistent_parent" / "sub" / "file"
+    with warnings.catch_warnings(record=True) as record:
+        open_path(missing_parent_path, "w", suffix="pkl").close()
+    assert any("does not exist" in str(warning.message) for warning in record)
+    # Verify the parent was created and file was written
+    assert (tmp_path / "nonexistent_parent" / "sub" / "file.pkl").exists()
